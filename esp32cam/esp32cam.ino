@@ -28,6 +28,9 @@ const char* password = "0102030405";
 #define FILE_PHOTO_PATH "/photo.jpg"
 #define BUCKET_PHOTO "/data/photo.jpg"
 
+// Đường dẫn đến Realtime Database
+#define DATABASE_URL "https://aquariummanagement-ef751-default-rtdb.asia-southeast1.firebasedatabase.app/"
+
 // Cấu hình chân cho module camera OV2640 (CAMERA_MODEL_AI_THINKER)
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -46,8 +49,6 @@ const char* password = "0102030405";
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
-boolean takeNewPhoto = true;
-
 // Định nghĩa các đối tượng Firebase Data
 FirebaseData fbdo;
 FirebaseAuth auth;
@@ -55,7 +56,11 @@ FirebaseConfig configF;
 
 void fcsUploadCallback(FCS_UploadStatusInfo info);
 
-bool taskCompleted = false;
+bool takePhoto = false;
+int airPumpSpeed = 0;
+bool bigLight = false;
+bool smallLight = false;
+bool waterPump = false;
 
 // Chụp ảnh và lưu vào LittleFS
 void capturePhotoSaveLittleFS( void ) {
@@ -73,8 +78,7 @@ void capturePhotoSaveLittleFS( void ) {
   fb = esp_camera_fb_get();  
   if(!fb) {
     Serial.println("Không thể chụp ảnh");
-    delay(1000);
-    ESP.restart();
+    return;
   }  
 
   // Tên file ảnh
@@ -105,6 +109,7 @@ void initWiFi(){
     delay(1000);
     Serial.println("Đang kết nối WiFi...");
   }
+  Serial.println("Đã kết nối WiFi");
 }
 
 // Khởi tạo LittleFS
@@ -174,6 +179,8 @@ void setup() {
   // Cấu hình Firebase
   // Gán API key
   configF.api_key = API_KEY;
+  // Gán URL của Realtime Database
+  configF.database_url = DATABASE_URL;
   // Gán thông tin đăng nhập người dùng
   auth.user.email = USER_EMAIL;
   auth.user.password = USER_PASSWORD;
@@ -185,24 +192,53 @@ void setup() {
 }
 
 void loop() {
-  if (takeNewPhoto) {
-    capturePhotoSaveLittleFS();
-    takeNewPhoto = false;
-  }
-  delay(1);
-  if (Firebase.ready() && !taskCompleted){
-    taskCompleted = true;
-    Serial.print("Đang tải ảnh lên... ");
+  if (Firebase.ready()) {
+    // Đọc giá trị từ Realtime Database
+    if (Firebase.RTDB.getBool(&fbdo, "/takePhoto")) {
+      takePhoto = fbdo.boolData();
+    }
+    if (Firebase.RTDB.getInt(&fbdo, "/airPumpSpeed")) {
+      airPumpSpeed = fbdo.intData();
+    }
+    if (Firebase.RTDB.getBool(&fbdo, "/bigLight")) {
+      bigLight = fbdo.boolData();
+    }
+    if (Firebase.RTDB.getBool(&fbdo, "/smallLight")) {
+      smallLight = fbdo.boolData();
+    }
+    if (Firebase.RTDB.getBool(&fbdo, "/waterPump")) {
+      waterPump = fbdo.boolData();
+    }
 
-    // MIME type phải hợp lệ để tránh vấn đề khi tải xuống.
-    // Hệ thống file cho flash và SD/SDMMC có thể được thay đổi trong FirebaseFS.h.
-    if (Firebase.Storage.upload(&fbdo, STORAGE_BUCKET_ID /* Firebase Storage bucket id */, FILE_PHOTO_PATH /* đường dẫn đến file local */, mem_storage_type_flash /* loại bộ nhớ, mem_storage_type_flash và mem_storage_type_sd */, BUCKET_PHOTO /* đường dẫn của file remote trong bucket */, "image/jpeg" /* mime type */, fcsUploadCallback)){
-      Serial.printf("\nURL Tải xuống: %s\n", fbdo.downloadURL().c_str());
-    }
-    else{
-      Serial.println(fbdo.errorReason());
+    // In ra các giá trị đã đọc được
+    Serial.println("Giá trị đọc được từ Firebase:");
+    Serial.printf("takePhoto: %s\n", takePhoto ? "true" : "false");
+    Serial.printf("airPumpSpeed: %d\n", airPumpSpeed);
+    Serial.printf("bigLight: %s\n", bigLight ? "true" : "false");
+    Serial.printf("smallLight: %s\n", smallLight ? "true" : "false");
+    Serial.printf("waterPump: %s\n", waterPump ? "true" : "false");
+
+    if (takePhoto) {
+      Serial.println("Bắt đầu chụp ảnh...");
+      capturePhotoSaveLittleFS();
+      Serial.print("Đang tải ảnh lên Firebase Storage... ");
+
+      if (Firebase.Storage.upload(&fbdo, STORAGE_BUCKET_ID, FILE_PHOTO_PATH, mem_storage_type_flash, BUCKET_PHOTO, "image/jpeg", fcsUploadCallback)){
+        Serial.printf("\nURL Tải xuống: %s\n", fbdo.downloadURL().c_str());
+        
+        // Đặt lại trạng thái takePhoto
+        if (Firebase.RTDB.setBool(&fbdo, "/takePhoto", false)) {
+          Serial.println("Đã đặt lại trạng thái takePhoto thành false");
+        } else {
+          Serial.println("Lỗi khi đặt lại trạng thái takePhoto");
+        }
+      }
+      else {
+        Serial.println("Lỗi khi tải ảnh lên: " + fbdo.errorReason());
+      }
     }
   }
+  delay(5000);  // Đợi 5 giây trước khi kiểm tra lại
 }
 
 // Hàm callback cho quá trình tải lên Firebase Storage
