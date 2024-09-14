@@ -1,36 +1,34 @@
 #include "Arduino.h"
 #include "WiFi.h"
 #include "esp_camera.h"
-#include "soc/soc.h"           // Disable brownout problems
-#include "soc/rtc_cntl_reg.h"  // Disable brownout problems
+#include "soc/soc.h"           // Vô hiệu hóa các vấn đề về brownout
+#include "soc/rtc_cntl_reg.h"  // Vô hiệu hóa các vấn đề về brownout
 #include "driver/rtc_io.h"
 #include <LittleFS.h>
 #include <FS.h>
 #include <Firebase_ESP_Client.h>
-//Provide the token generation process info.
+//Cung cấp thông tin về quá trình tạo token
 #include <addons/TokenHelper.h>
 
-//Replace with your network credentials
-const char* ssid = "REPLACE_WITH_YOUR_SSID";
-const char* password = "REPLACE_WITH_YOUR_PASSWORD";
+// Thay thế bằng thông tin mạng của bạn
+const char* ssid = "P302";
+const char* password = "0102030405";
 
-// Insert Firebase project API Key
-#define API_KEY "REPLACE_WITH_YOUR_FIREBASE_PROJECT_API_KEY"
+// Chèn API Key của dự án Firebase
+#define API_KEY "AIzaSyBFq2fpTW-8RUBJGKF9HG2cx1dXe9R9XTw"
 
-// Insert Authorized Email and Corresponding Password
-#define USER_EMAIL "REPLACE_WITH_THE_AUTHORIZED_USER_EMAIL"
-#define USER_PASSWORD "REPLACE_WITH_THE_AUTHORIZED_USER_PASSWORD"
+// Chèn Email và Mật khẩu được ủy quyền
+#define USER_EMAIL "tungpham010203@gmail.com"
+#define USER_PASSWORD "123123"
 
-// Insert Firebase storage bucket ID e.g bucket-name.appspot.com
-#define STORAGE_BUCKET_ID "REPLACE_WITH_YOUR_STORAGE_BUCKET_ID"
-// For example:
-//#define STORAGE_BUCKET_ID "esp-iot-app.appspot.com"
+// Chèn ID bucket lưu trữ Firebase, ví dụ bucket-name.appspot.com
+#define STORAGE_BUCKET_ID "aquariummanagement-ef751.appspot.com"
 
-// Photo File Name to save in LittleFS
+// Tên file ảnh để lưu trong LittleFS
 #define FILE_PHOTO_PATH "/photo.jpg"
 #define BUCKET_PHOTO "/data/photo.jpg"
 
-// OV2640 camera module pins (CAMERA_MODEL_AI_THINKER)
+// Cấu hình chân cho module camera OV2640 (CAMERA_MODEL_AI_THINKER)
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -50,7 +48,7 @@ const char* password = "REPLACE_WITH_YOUR_PASSWORD";
 
 boolean takeNewPhoto = true;
 
-//Define Firebase Data objects
+// Định nghĩa các đối tượng Firebase Data
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig configF;
@@ -59,68 +57,71 @@ void fcsUploadCallback(FCS_UploadStatusInfo info);
 
 bool taskCompleted = false;
 
-// Capture Photo and Save it to LittleFS
+// Chụp ảnh và lưu vào LittleFS
 void capturePhotoSaveLittleFS( void ) {
-  // Dispose first pictures because of bad quality
+  // Bỏ qua các ảnh đầu tiên vì chất lượng kém
   camera_fb_t* fb = NULL;
-  // Skip first 3 frames (increase/decrease number as needed).
+  // Bỏ qua 3 khung hình đầu tiên (có thể tăng/giảm số lượng nếu cần)
   for (int i = 0; i < 4; i++) {
     fb = esp_camera_fb_get();
     esp_camera_fb_return(fb);
     fb = NULL;
   }
     
-  // Take a new photo
+  // Chụp ảnh mới
   fb = NULL;  
   fb = esp_camera_fb_get();  
   if(!fb) {
-    Serial.println("Camera capture failed");
+    Serial.println("Không thể chụp ảnh");
     delay(1000);
     ESP.restart();
   }  
 
-  // Photo file name
-  Serial.printf("Picture file name: %s\n", FILE_PHOTO_PATH);
+  // Tên file ảnh
+  Serial.printf("Tên file ảnh: %s\n", FILE_PHOTO_PATH);
   File file = LittleFS.open(FILE_PHOTO_PATH, FILE_WRITE);
 
-  // Insert the data in the photo file
+  // Chèn dữ liệu vào file ảnh
   if (!file) {
-    Serial.println("Failed to open file in writing mode");
+    Serial.println("Không thể mở file để ghi");
   }
   else {
-    file.write(fb->buf, fb->len); // payload (image), payload length
-    Serial.print("The picture has been saved in ");
+    file.write(fb->buf, fb->len); // payload (ảnh), độ dài payload
+    Serial.print("Ảnh đã được lưu vào ");
     Serial.print(FILE_PHOTO_PATH);
-    Serial.print(" - Size: ");
+    Serial.print(" - Kích thước: ");
     Serial.print(fb->len);
     Serial.println(" bytes");
   }
-  // Close the file
+  // Đóng file
   file.close();
   esp_camera_fb_return(fb);
 }
 
+// Khởi tạo kết nối WiFi
 void initWiFi(){
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
-    Serial.println("Connecting to WiFi...");
+    Serial.println("Đang kết nối WiFi...");
   }
 }
 
+// Khởi tạo LittleFS
 void initLittleFS(){
   if (!LittleFS.begin(true)) {
-    Serial.println("An Error has occurred while mounting LittleFS");
+    Serial.println("Đã xảy ra lỗi khi mount LittleFS");
     ESP.restart();
   }
   else {
     delay(500);
-    Serial.println("LittleFS mounted successfully");
+    Serial.println("LittleFS đã được mount thành công");
   }
 }
 
+// Khởi tạo camera
 void initCamera(){
- // OV2640 camera module
+ // Cấu hình module camera OV2640
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -153,31 +154,31 @@ void initCamera(){
     config.jpeg_quality = 12;
     config.fb_count = 1;
   }
-  // Camera init
+  // Khởi tạo camera
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.printf("Khởi tạo camera thất bại với lỗi 0x%x", err);
     ESP.restart();
   } 
 }
 
 void setup() {
-  // Serial port for debugging purposes
+  // Khởi tạo cổng Serial để debug
   Serial.begin(115200);
   initWiFi();
   initLittleFS();
-  // Turn-off the 'brownout detector'
+  // Tắt 'brownout detector'
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   initCamera();
 
-  //Firebase
-  // Assign the api key
+  // Cấu hình Firebase
+  // Gán API key
   configF.api_key = API_KEY;
-  //Assign the user sign in credentials
+  // Gán thông tin đăng nhập người dùng
   auth.user.email = USER_EMAIL;
   auth.user.password = USER_PASSWORD;
-  //Assign the callback function for the long running token generation task
-  configF.token_status_callback = tokenStatusCallback; //see addons/TokenHelper.h
+  // Gán hàm callback cho quá trình tạo token dài hạn
+  configF.token_status_callback = tokenStatusCallback; // xem addons/TokenHelper.h
 
   Firebase.begin(&configF, &auth);
   Firebase.reconnectWiFi(true);
@@ -191,12 +192,12 @@ void loop() {
   delay(1);
   if (Firebase.ready() && !taskCompleted){
     taskCompleted = true;
-    Serial.print("Uploading picture... ");
+    Serial.print("Đang tải ảnh lên... ");
 
-    //MIME type should be valid to avoid the download problem.
-    //The file systems for flash and SD/SDMMC can be changed in FirebaseFS.h.
-    if (Firebase.Storage.upload(&fbdo, STORAGE_BUCKET_ID /* Firebase Storage bucket id */, FILE_PHOTO_PATH /* path to local file */, mem_storage_type_flash /* memory storage type, mem_storage_type_flash and mem_storage_type_sd */, BUCKET_PHOTO /* path of remote file stored in the bucket */, "image/jpeg" /* mime type */,fcsUploadCallback)){
-      Serial.printf("\nDownload URL: %s\n", fbdo.downloadURL().c_str());
+    // MIME type phải hợp lệ để tránh vấn đề khi tải xuống.
+    // Hệ thống file cho flash và SD/SDMMC có thể được thay đổi trong FirebaseFS.h.
+    if (Firebase.Storage.upload(&fbdo, STORAGE_BUCKET_ID /* Firebase Storage bucket id */, FILE_PHOTO_PATH /* đường dẫn đến file local */, mem_storage_type_flash /* loại bộ nhớ, mem_storage_type_flash và mem_storage_type_sd */, BUCKET_PHOTO /* đường dẫn của file remote trong bucket */, "image/jpeg" /* mime type */, fcsUploadCallback)){
+      Serial.printf("\nURL Tải xuống: %s\n", fbdo.downloadURL().c_str());
     }
     else{
       Serial.println(fbdo.errorReason());
@@ -204,31 +205,31 @@ void loop() {
   }
 }
 
-// The Firebase Storage upload callback function
+// Hàm callback cho quá trình tải lên Firebase Storage
 void fcsUploadCallback(FCS_UploadStatusInfo info){
     if (info.status == firebase_fcs_upload_status_init){
-        Serial.printf("Uploading file %s (%d) to %s\n", info.localFileName.c_str(), info.fileSize, info.remoteFileName.c_str());
+        Serial.printf("Đang tải lên file %s (%d) đến %s\n", info.localFileName.c_str(), info.fileSize, info.remoteFileName.c_str());
     }
     else if (info.status == firebase_fcs_upload_status_upload)
     {
-        Serial.printf("Uploaded %d%s, Elapsed time %d ms\n", (int)info.progress, "%", info.elapsedTime);
+        Serial.printf("Đã tải lên %d%s, Thời gian đã trôi qua %d ms\n", (int)info.progress, "%", info.elapsedTime);
     }
     else if (info.status == firebase_fcs_upload_status_complete)
     {
-        Serial.println("Upload completed\n");
+        Serial.println("Tải lên hoàn tất\n");
         FileMetaInfo meta = fbdo.metaData();
-        Serial.printf("Name: %s\n", meta.name.c_str());
+        Serial.printf("Tên: %s\n", meta.name.c_str());
         Serial.printf("Bucket: %s\n", meta.bucket.c_str());
-        Serial.printf("contentType: %s\n", meta.contentType.c_str());
-        Serial.printf("Size: %d\n", meta.size);
-        Serial.printf("Generation: %lu\n", meta.generation);
+        Serial.printf("Loại nội dung: %s\n", meta.contentType.c_str());
+        Serial.printf("Kích thước: %d\n", meta.size);
+        Serial.printf("Thế hệ: %lu\n", meta.generation);
         Serial.printf("Metageneration: %lu\n", meta.metageneration);
         Serial.printf("ETag: %s\n", meta.etag.c_str());
         Serial.printf("CRC32: %s\n", meta.crc32.c_str());
         Serial.printf("Tokens: %s\n", meta.downloadTokens.c_str());
-        Serial.printf("Download URL: %s\n\n", fbdo.downloadURL().c_str());
+        Serial.printf("URL Tải xuống: %s\n\n", fbdo.downloadURL().c_str());
     }
     else if (info.status == firebase_fcs_upload_status_error){
-        Serial.printf("Upload failed, %s\n", info.errorMsg.c_str());
+        Serial.printf("Tải lên thất bại, %s\n", info.errorMsg.c_str());
     }
 }
