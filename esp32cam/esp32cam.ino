@@ -49,6 +49,15 @@ const char* password = "0102030405";
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
+// Định nghĩa chân GPIO cho kiểm tra nguồn điện và đánh thức
+#define POWER_PIN GPIO_NUM_12  // Thay đổi số chân nếu cần
+
+// Thời gian deep sleep (ví dụ: 10 giây)
+#define uS_TO_S_FACTOR 1000000  // Chuyển đổi micro giây thành giây
+#define TIME_TO_SLEEP  10       // Thời gian ngủ (giây)
+
+RTC_DATA_ATTR int bootCount = 0;
+
 // Định nghĩa các đối tượng Firebase Data
 FirebaseData fbdo;
 FirebaseAuth auth;
@@ -166,32 +175,97 @@ void initCamera(){
     ESP.restart();
   } 
 }
-
-void setup() {
-  // Khởi tạo cổng Serial để debug
-  Serial.begin(115200);
+void normalOperation() {
+  Serial.println("Bắt đầu hoạt động bình thường");
+  
   initWiFi();
   initLittleFS();
-  // Tắt 'brownout detector'
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   initCamera();
 
   // Cấu hình Firebase
-  // Gán API key
   configF.api_key = API_KEY;
-  // Gán URL của Realtime Database
   configF.database_url = DATABASE_URL;
-  // Gán thông tin đăng nhập người dùng
   auth.user.email = USER_EMAIL;
   auth.user.password = USER_PASSWORD;
-  // Gán hàm callback cho quá trình tạo token dài hạn
-  configF.token_status_callback = tokenStatusCallback; // xem addons/TokenHelper.h
+  configF.token_status_callback = tokenStatusCallback;
 
   Firebase.begin(&configF, &auth);
   Firebase.reconnectWiFi(true);
 }
 
+void goToDeepSleep() {
+  Serial.println("Đi vào chế độ deep sleep");
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  
+  esp_camera_deinit();
+  
+  esp_sleep_enable_ext0_wakeup(POWER_PIN, HIGH);
+  
+  Serial.println("Đặt thời gian ngủ: " + String(TIME_TO_SLEEP) + " giây");
+  esp_deep_sleep(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+}
+void setup() {
+  // Khởi tạo cổng Serial để debug
+  Serial.begin(115200);
+  delay(1000); // Đợi Serial port ổn định
+
+  ++bootCount;
+  Serial.println("Boot số: " + String(bootCount));
+
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  
+  pinMode(POWER_PIN, INPUT);
+
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+    Serial.println("Thức dậy do có điện trở lại");
+    if (digitalRead(POWER_PIN) == HIGH) {
+      Serial.println("Xác nhận có điện, tiếp tục khởi động bình thường");
+      normalOperation();
+    } else {
+      Serial.println("Điện vẫn chưa ổn định, quay lại deep sleep");
+      goToDeepSleep();
+    }
+  } else {
+    Serial.println("Khởi động bình thường");
+    if (digitalRead(POWER_PIN) == LOW) {
+      Serial.println("Không có điện, chuyển sang chế độ tiết kiệm điện");
+      goToDeepSleep();
+    } else {
+      normalOperation();
+    }
+  }
+  
+//  initWiFi();
+//  initLittleFS();
+//  // Tắt 'brownout detector'
+//  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+//  initCamera();
+//
+//  // Cấu hình Firebase
+//  // Gán API key
+//  configF.api_key = API_KEY;
+//  // Gán URL của Realtime Database
+//  configF.database_url = DATABASE_URL;
+//  // Gán thông tin đăng nhập người dùng
+//  auth.user.email = USER_EMAIL;
+//  auth.user.password = USER_PASSWORD;
+//  // Gán hàm callback cho quá trình tạo token dài hạn
+//  configF.token_status_callback = tokenStatusCallback; // xem addons/TokenHelper.h
+//
+//  Firebase.begin(&configF, &auth);
+//  Firebase.reconnectWiFi(true);
+}
+
 void loop() {
+  // Kiểm tra nguồn điện trong mỗi vòng lặp
+  if (digitalRead(POWER_PIN) == LOW) {
+    Serial.println("Phát hiện mất điện, chuyển sang chế độ tiết kiệm điện");
+    goToDeepSleep();
+    return;
+  }
+
   if (Firebase.ready()) {
     // Đọc giá trị từ Realtime Database
     if (Firebase.RTDB.getBool(&fbdo, "/takePhoto")) {
