@@ -1,3 +1,4 @@
+//arduino esp32 cam ai think
 #include "Arduino.h"
 #include "WiFi.h"
 #include "esp_camera.h"
@@ -49,15 +50,6 @@ const char* password = "0102030405";
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
-// Định nghĩa chân GPIO cho kiểm tra nguồn điện và đánh thức
-#define POWER_PIN GPIO_NUM_12  // Thay đổi số chân nếu cần
-
-// Thời gian deep sleep (ví dụ: 10 giây)
-#define uS_TO_S_FACTOR 1000000  // Chuyển đổi micro giây thành giây
-#define TIME_TO_SLEEP  10       // Thời gian ngủ (giây)
-
-RTC_DATA_ATTR int bootCount = 0;
-
 // Định nghĩa các đối tượng Firebase Data
 FirebaseData fbdo;
 FirebaseAuth auth;
@@ -68,9 +60,11 @@ void fcsUploadCallback(FCS_UploadStatusInfo info);
 bool takePhoto = false;
 int airPumpSpeed = 0;
 bool bigLight = false;
-bool smallLight = false;
 bool waterPump = false;
 
+int airPumpSpeed2 = 0;
+bool bigLight2 = false;
+bool waterPump2 = false;
 // Chụp ảnh và lưu vào LittleFS
 void capturePhotoSaveLittleFS( void ) {
   // Bỏ qua các ảnh đầu tiên vì chất lượng kém
@@ -81,14 +75,14 @@ void capturePhotoSaveLittleFS( void ) {
     esp_camera_fb_return(fb);
     fb = NULL;
   }
-    
+
   // Chụp ảnh mới
-  fb = NULL;  
-  fb = esp_camera_fb_get();  
-  if(!fb) {
+  fb = NULL;
+  fb = esp_camera_fb_get();
+  if (!fb) {
     Serial.println("Không thể chụp ảnh");
     return;
-  }  
+  }
 
   // Tên file ảnh
   Serial.printf("Tên file ảnh: %s\n", FILE_PHOTO_PATH);
@@ -112,7 +106,7 @@ void capturePhotoSaveLittleFS( void ) {
 }
 
 // Khởi tạo kết nối WiFi
-void initWiFi(){
+void initWiFi() {
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
@@ -122,7 +116,7 @@ void initWiFi(){
 }
 
 // Khởi tạo LittleFS
-void initLittleFS(){
+void initLittleFS() {
   if (!LittleFS.begin(true)) {
     Serial.println("Đã xảy ra lỗi khi mount LittleFS");
     ESP.restart();
@@ -134,8 +128,8 @@ void initLittleFS(){
 }
 
 // Khởi tạo camera
-void initCamera(){
- // Cấu hình module camera OV2640
+void initCamera() {
+  // Cấu hình module camera OV2640
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -173,99 +167,69 @@ void initCamera(){
   if (err != ESP_OK) {
     Serial.printf("Khởi tạo camera thất bại với lỗi 0x%x", err);
     ESP.restart();
-  } 
+  }
 }
-void normalOperation() {
-  Serial.println("Bắt đầu hoạt động bình thường");
-  
+
+void sendToNano(int airPumpSpeed, bool bigLight, bool waterPump) {
+  char buffer[20];
+  sprintf(buffer, "TXofESP32(%d,%d,%d)", airPumpSpeed, bigLight, waterPump);
+  Serial.println(buffer);
+}
+
+void receiveFromNano() {
+  if (Serial.available()) {
+    Serial.println("có tín hiệu từ nano");
+    String data = Serial.readStringUntil('\n');
+    if (data.startsWith("TXofNANO(")) {
+      int values[3];
+      sscanf(data.c_str(), "TXofNANO(%d,%d,%d,%d)", &values[0], &values[1], &values[2]);
+
+      airPumpSpeed = values[0];
+      bigLight = values[1];
+      waterPump = values[2];
+
+      if (airPumpSpeed != airPumpSpeed2 || bigLight != bigLight2 || waterPump != waterPump2) {
+        // Update Firebase with new values
+        if (Firebase.RTDB.setInt(&fbdo, "/airPumpSpeed", airPumpSpeed) &&
+            Firebase.RTDB.setBool(&fbdo, "/bigLight", bigLight) &&
+            Firebase.RTDB.setBool(&fbdo, "/waterPump", waterPump)) {
+          Serial.println("Firebase updated successfully");
+        } else {
+          Serial.println("Firebase update failed");
+        }
+        airPumpSpeed2 = airPumpSpeed;
+        bigLight2 = bigLight;
+        waterPump2 = waterPump;
+      }
+
+    }
+  }
+}
+
+void setup() {
+  // Khởi tạo cổng Serial để debug
+  Serial.begin(57600);
   initWiFi();
   initLittleFS();
+  // Tắt 'brownout detector'
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   initCamera();
 
   // Cấu hình Firebase
+  // Gán API key
   configF.api_key = API_KEY;
+  // Gán URL của Realtime Database
   configF.database_url = DATABASE_URL;
+  // Gán thông tin đăng nhập người dùng
   auth.user.email = USER_EMAIL;
   auth.user.password = USER_PASSWORD;
-  configF.token_status_callback = tokenStatusCallback;
+  // Gán hàm callback cho quá trình tạo token dài hạn
+  configF.token_status_callback = tokenStatusCallback; // xem addons/TokenHelper.h
 
   Firebase.begin(&configF, &auth);
   Firebase.reconnectWiFi(true);
-}
 
-void goToDeepSleep() {
-  Serial.println("Đi vào chế độ deep sleep");
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  
-  esp_camera_deinit();
-  
-  esp_sleep_enable_ext0_wakeup(POWER_PIN, HIGH);
-  
-  Serial.println("Đặt thời gian ngủ: " + String(TIME_TO_SLEEP) + " giây");
-  esp_deep_sleep(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-}
-void setup() {
-  // Khởi tạo cổng Serial để debug
-  Serial.begin(115200);
-  delay(1000); // Đợi Serial port ổn định
-
-  ++bootCount;
-  Serial.println("Boot số: " + String(bootCount));
-
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  
-  pinMode(POWER_PIN, INPUT);
-
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
-    Serial.println("Thức dậy do có điện trở lại");
-    if (digitalRead(POWER_PIN) == HIGH) {
-      Serial.println("Xác nhận có điện, tiếp tục khởi động bình thường");
-      normalOperation();
-    } else {
-      Serial.println("Điện vẫn chưa ổn định, quay lại deep sleep");
-      goToDeepSleep();
-    }
-  } else {
-    Serial.println("Khởi động bình thường");
-    if (digitalRead(POWER_PIN) == LOW) {
-      Serial.println("Không có điện, chuyển sang chế độ tiết kiệm điện");
-      goToDeepSleep();
-    } else {
-      normalOperation();
-    }
-  }
-  
-//  initWiFi();
-//  initLittleFS();
-//  // Tắt 'brownout detector'
-//  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
-//  initCamera();
-//
-//  // Cấu hình Firebase
-//  // Gán API key
-//  configF.api_key = API_KEY;
-//  // Gán URL của Realtime Database
-//  configF.database_url = DATABASE_URL;
-//  // Gán thông tin đăng nhập người dùng
-//  auth.user.email = USER_EMAIL;
-//  auth.user.password = USER_PASSWORD;
-//  // Gán hàm callback cho quá trình tạo token dài hạn
-//  configF.token_status_callback = tokenStatusCallback; // xem addons/TokenHelper.h
-//
-//  Firebase.begin(&configF, &auth);
-//  Firebase.reconnectWiFi(true);
-}
-
-void loop() {
-  // Kiểm tra nguồn điện trong mỗi vòng lặp
-  if (digitalRead(POWER_PIN) == LOW) {
-    Serial.println("Phát hiện mất điện, chuyển sang chế độ tiết kiệm điện");
-    goToDeepSleep();
-    return;
-  }
-
+  //  Serial.begin(9600);  // Start serial communication with Arduino Nano
   if (Firebase.ready()) {
     // Đọc giá trị từ Realtime Database
     if (Firebase.RTDB.getBool(&fbdo, "/takePhoto")) {
@@ -277,29 +241,65 @@ void loop() {
     if (Firebase.RTDB.getBool(&fbdo, "/bigLight")) {
       bigLight = fbdo.boolData();
     }
-    if (Firebase.RTDB.getBool(&fbdo, "/smallLight")) {
-      smallLight = fbdo.boolData();
+    if (Firebase.RTDB.getBool(&fbdo, "/waterPump")) {
+      waterPump = fbdo.boolData();
+    }
+
+    // In ra các giá trị đã đọc được
+//    Serial.println("Giá trị đọc được từ Firebase:");
+//    Serial.printf("takePhoto: %s\n", takePhoto ? "true" : "false");
+//    Serial.printf("airPumpSpeed: %d\n", airPumpSpeed);
+//    Serial.printf("bigLight: %s\n", bigLight ? "true" : "false");
+//    Serial.printf("waterPump: %s\n", waterPump ? "true" : "false");
+    if (airPumpSpeed != airPumpSpeed2 || bigLight != bigLight2 || waterPump != waterPump2) {
+      // Send current state to Arduino Nano
+      sendToNano(airPumpSpeed, bigLight, waterPump);
+      airPumpSpeed2 = airPumpSpeed;
+      bigLight2 = bigLight;
+      waterPump2 = waterPump;
+    }
+  }
+}
+
+void loop() {
+  if (Firebase.ready()) {
+    // Đọc giá trị từ Realtime Database
+    if (Firebase.RTDB.getBool(&fbdo, "/takePhoto")) {
+      takePhoto = fbdo.boolData();
+    }
+    if (Firebase.RTDB.getInt(&fbdo, "/airPumpSpeed")) {
+      airPumpSpeed = fbdo.intData();
+    }
+    if (Firebase.RTDB.getBool(&fbdo, "/bigLight")) {
+      bigLight = fbdo.boolData();
     }
     if (Firebase.RTDB.getBool(&fbdo, "/waterPump")) {
       waterPump = fbdo.boolData();
     }
 
     // In ra các giá trị đã đọc được
-    Serial.println("Giá trị đọc được từ Firebase:");
-    Serial.printf("takePhoto: %s\n", takePhoto ? "true" : "false");
-    Serial.printf("airPumpSpeed: %d\n", airPumpSpeed);
-    Serial.printf("bigLight: %s\n", bigLight ? "true" : "false");
-    Serial.printf("smallLight: %s\n", smallLight ? "true" : "false");
-    Serial.printf("waterPump: %s\n", waterPump ? "true" : "false");
+//    Serial.println("Giá trị đọc được từ Firebase:");
+//    Serial.printf("takePhoto: %s\n", takePhoto ? "true" : "false");
+//    Serial.printf("airPumpSpeed: %d\n", airPumpSpeed);
+//    Serial.printf("bigLight: %s\n", bigLight ? "true" : "false");
+//    Serial.printf("waterPump: %s\n", waterPump ? "true" : "false");
+    if (airPumpSpeed != airPumpSpeed2 || bigLight != bigLight2 || waterPump != waterPump2) {
+      // Send current state to Arduino Nano
+      sendToNano(airPumpSpeed, bigLight, waterPump);
+      airPumpSpeed2 = airPumpSpeed;
+      bigLight2 = bigLight;
+      waterPump2 = waterPump;
+    }
+
 
     if (takePhoto) {
       Serial.println("Bắt đầu chụp ảnh...");
       capturePhotoSaveLittleFS();
       Serial.print("Đang tải ảnh lên Firebase Storage... ");
 
-      if (Firebase.Storage.upload(&fbdo, STORAGE_BUCKET_ID, FILE_PHOTO_PATH, mem_storage_type_flash, BUCKET_PHOTO, "image/jpeg", fcsUploadCallback)){
+      if (Firebase.Storage.upload(&fbdo, STORAGE_BUCKET_ID, FILE_PHOTO_PATH, mem_storage_type_flash, BUCKET_PHOTO, "image/jpeg", fcsUploadCallback)) {
         Serial.printf("\nURL Tải xuống: %s\n", fbdo.downloadURL().c_str());
-        
+
         // Đặt lại trạng thái takePhoto
         if (Firebase.RTDB.setBool(&fbdo, "/takePhoto", false)) {
           Serial.println("Đã đặt lại trạng thái takePhoto thành false");
@@ -311,35 +311,40 @@ void loop() {
         Serial.println("Lỗi khi tải ảnh lên: " + fbdo.errorReason());
       }
     }
+    delay(100);  // Keep the existing delay
   }
-  delay(5000);  // Đợi 5 giây trước khi kiểm tra lại
+  // Check for updates from Arduino Nano
+  receiveFromNano();
+
 }
 
+// ... (keep all other existing functions)
+
 // Hàm callback cho quá trình tải lên Firebase Storage
-void fcsUploadCallback(FCS_UploadStatusInfo info){
-    if (info.status == firebase_fcs_upload_status_init){
-        Serial.printf("Đang tải lên file %s (%d) đến %s\n", info.localFileName.c_str(), info.fileSize, info.remoteFileName.c_str());
-    }
-    else if (info.status == firebase_fcs_upload_status_upload)
-    {
-        Serial.printf("Đã tải lên %d%s, Thời gian đã trôi qua %d ms\n", (int)info.progress, "%", info.elapsedTime);
-    }
-    else if (info.status == firebase_fcs_upload_status_complete)
-    {
-        Serial.println("Tải lên hoàn tất\n");
-        FileMetaInfo meta = fbdo.metaData();
-        Serial.printf("Tên: %s\n", meta.name.c_str());
-        Serial.printf("Bucket: %s\n", meta.bucket.c_str());
-        Serial.printf("Loại nội dung: %s\n", meta.contentType.c_str());
-        Serial.printf("Kích thước: %d\n", meta.size);
-        Serial.printf("Thế hệ: %lu\n", meta.generation);
-        Serial.printf("Metageneration: %lu\n", meta.metageneration);
-        Serial.printf("ETag: %s\n", meta.etag.c_str());
-        Serial.printf("CRC32: %s\n", meta.crc32.c_str());
-        Serial.printf("Tokens: %s\n", meta.downloadTokens.c_str());
-        Serial.printf("URL Tải xuống: %s\n\n", fbdo.downloadURL().c_str());
-    }
-    else if (info.status == firebase_fcs_upload_status_error){
-        Serial.printf("Tải lên thất bại, %s\n", info.errorMsg.c_str());
-    }
+void fcsUploadCallback(FCS_UploadStatusInfo info) {
+  if (info.status == firebase_fcs_upload_status_init) {
+    Serial.printf("Đang tải lên file %s (%d) đến %s\n", info.localFileName.c_str(), info.fileSize, info.remoteFileName.c_str());
+  }
+  else if (info.status == firebase_fcs_upload_status_upload)
+  {
+    Serial.printf("Đã tải lên %d%s, Thời gian đã trôi qua %d ms\n", (int)info.progress, "%", info.elapsedTime);
+  }
+  else if (info.status == firebase_fcs_upload_status_complete)
+  {
+    Serial.println("Tải lên hoàn tất\n");
+    FileMetaInfo meta = fbdo.metaData();
+    Serial.printf("Tên: %s\n", meta.name.c_str());
+    Serial.printf("Bucket: %s\n", meta.bucket.c_str());
+    Serial.printf("Loại nội dung: %s\n", meta.contentType.c_str());
+    Serial.printf("Kích thước: %d\n", meta.size);
+    Serial.printf("Thế hệ: %lu\n", meta.generation);
+    Serial.printf("Metageneration: %lu\n", meta.metageneration);
+    Serial.printf("ETag: %s\n", meta.etag.c_str());
+    Serial.printf("CRC32: %s\n", meta.crc32.c_str());
+    Serial.printf("Tokens: %s\n", meta.downloadTokens.c_str());
+    Serial.printf("URL Tải xuống: %s\n\n", fbdo.downloadURL().c_str());
+  }
+  else if (info.status == firebase_fcs_upload_status_error) {
+    Serial.printf("Tải lên thất bại, %s\n", info.errorMsg.c_str());
+  }
 }

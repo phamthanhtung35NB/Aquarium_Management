@@ -1,3 +1,6 @@
+#include <SoftwareSerial.h>
+
+// ... (keep all the existing constant definitions and pin configurations)
 const int bientroX = A0 ;
 const int bientroY = A1 ;
 const int btn_bom = 9;
@@ -43,10 +46,15 @@ const int Seg[20] = {
   0b11111111,//8 và dấu chấm
   0b11101111,//9 và dấu chấm
 };
+#define RX_PIN 6  // Kết nối với chân TX của ESP32-CAM
+#define TX_PIN 7  // Kết nối với chân RX của ESP32-CAM
+SoftwareSerial espSerial(RX_PIN, TX_PIN);  // RX, TX
 
-void setup ()
-{
-  Serial.begin(9600);
+// ... (keep all the existing global variables)
+
+void setup() {
+
+  Serial.begin(57600);
 
   //  xf = analogRead(bientroX);
   //  yf = analogRead(bientroY);
@@ -73,64 +81,39 @@ void setup ()
 
   delay(1000);
   is_bom = true;
-  khoiDongLed();
+
+
+  espSerial.begin(57600);  // Start serial communication with ESP32-CAM
+  Serial.println("đã khởi động");
 }
-void khoiDongLed() {
-  for (int i = 0; i <= 9; i++) {
-    DK_Led(i);
-    delay(150);
+
+void sendToESP32(int airPumpSpeed, bool bigLight, bool waterPump) {
+  char buffer[20];
+  sprintf(buffer, "TXofNANO(%d,%d,%d)", airPumpSpeed, bigLight, waterPump);
+  espSerial.println(buffer);
+  Serial.print("gửi esp"); Serial.println(buffer);
+}
+
+void receiveFromESP32() {
+  if (espSerial.available()) {
+    Serial.println("có tín hiệu gửi từ esp:");
+
+    String data = espSerial.readStringUntil('\n');
+    Serial.println(data);
+    if (data.startsWith("TXofESP32(")) {
+      int values[3];
+      sscanf(data.c_str(), "TXofESP32(%d,%d,%d)", &values[0], &values[1], &values[2]);
+
+      tocdo = values[0];
+      is_led = values[1];
+      is_bom = values[2];
+      Serial.print("nhận của esp"); Serial.print(tocdo); Serial.print(is_led); Serial.print( is_bom); Serial.println();
+      // Update device states based on received values
+      analogWrite(ena, tocDo[tocdo]);
+      digitalWrite(role_led, is_led ? HIGH : LOW);
+      digitalWrite(in2_bom, is_bom ? HIGH : LOW);
+    }
   }
-  DK_Led(9);
-  delay(200);
-  // Tắt tất cả các đoạn của LED
-  digitalWrite(latchPin, LOW);
-  shiftOut(dataPin, clockPin, MSBFIRST, 0b00000000);
-  digitalWrite(latchPin, HIGH);
-  delay(200);
-  DK_Led(9);
-  delay(200);
-  // Tắt tất cả các đoạn của LED
-  digitalWrite(latchPin, LOW);
-  shiftOut(dataPin, clockPin, MSBFIRST, 0b00000000);
-  digitalWrite(latchPin, HIGH);
-  delay(200);
-  DK_Led(9);
-  delay(200);
-  // Tắt tất cả các đoạn của LED
-  digitalWrite(latchPin, LOW);
-  shiftOut(dataPin, clockPin, MSBFIRST, 0b00000000);
-  digitalWrite(latchPin, HIGH);
-  delay(200);
-  for (int i = 0; i <= 9; i++) {
-    DK_Led(i);
-    delay(150);
-  }
-  // Tắt tất cả các đoạn của LED
-  digitalWrite(latchPin, LOW);
-  shiftOut(dataPin, clockPin, MSBFIRST, 0b00000000);
-  digitalWrite(latchPin, HIGH);
-  delay(200);
-  DK_Led(3);
-  delay(250);
-  // Tắt tất cả các đoạn của LED
-  digitalWrite(latchPin, LOW);
-  shiftOut(dataPin, clockPin, MSBFIRST, 0b00000000);
-  digitalWrite(latchPin, HIGH);
-  delay(200);
-  DK_Led(3);
-  delay(250);
-  // Tắt tất cả các đoạn của LED
-  digitalWrite(latchPin, LOW);
-  shiftOut(dataPin, clockPin, MSBFIRST, 0b00000000);
-  digitalWrite(latchPin, HIGH);
-  delay(200);
-  DK_Led(3);
-  delay(250);
-  // Tắt tất cả các đoạn của LED
-  digitalWrite(latchPin, LOW);
-  shiftOut(dataPin, clockPin, MSBFIRST, 0b00000000);
-  digitalWrite(latchPin, HIGH);
-  delay(200);
 }
 void suc_khi_stop()
 {
@@ -169,6 +152,8 @@ void DK_bom_khi(int x) {
     } else if (x < 1200) {
       giamToc(2);
     }
+    // Send current state to ESP32-CAM
+    sendToESP32(tocdo, is_led, is_bom);
   }
   else if (x < 500) {
     if (x < 100) {
@@ -176,6 +161,8 @@ void DK_bom_khi(int x) {
     } else {
       tangToc(1);
     }
+    // Send current state to ESP32-CAM
+    sendToESP32(tocdo, is_led, is_bom);
   }
   DK_Led(tocdo);
   delay(1000);
@@ -206,8 +193,8 @@ void DK_Led(int i) {
     digitalWrite(latchPin, HIGH);
   }
 }
-void loop ()
-{
+
+void loop() {
   DK_bom_khi(analogRead(bientroX));
   //Serial.print("=");Serial.print(digitalRead(btn_bom));Serial.print("=");Serial.println(digitalRead(button_led));
 
@@ -221,6 +208,8 @@ void loop ()
     }
     delay(500);
     Serial.println(is_led);
+    // Send current state to ESP32-CAM
+    sendToESP32(tocdo, is_led, is_bom);
   }
   if (digitalRead(btn_bom) == HIGH) {
     if (is_bom == true) {
@@ -232,5 +221,11 @@ void loop ()
     }
     delay(500);
     Serial.println(is_bom);
+    // Send current state to ESP32-CAM
+    sendToESP32(tocdo, is_led, is_bom);
   }
+
+  // Check for commands from ESP32-CAM
+  receiveFromESP32();
+
 }
