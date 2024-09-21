@@ -54,7 +54,7 @@ SoftwareSerial espSerial(RX_PIN, TX_PIN);  // RX, TX
 
 void setup() {
 
-  Serial.begin(57600);
+  Serial.begin(9600);
 
   //  xf = analogRead(bientroX);
   //  yf = analogRead(bientroY);
@@ -83,7 +83,7 @@ void setup() {
   is_bom = true;
 
 
-  espSerial.begin(57600);  // Start serial communication with ESP32-CAM
+  espSerial.begin(9600);  // Start serial communication with ESP32-CAM
   Serial.println("đã khởi động");
 }
 
@@ -109,6 +109,13 @@ void receiveFromESP32() {
       is_bom = values[2];
       Serial.print("nhận của esp"); Serial.print(tocdo); Serial.print(is_led); Serial.print( is_bom); Serial.println();
       // Update device states based on received values
+      if (tocdo == 0) {
+        is_nhay = true;
+        suc_khi_stop();
+      }
+      else {
+        digitalWrite (in1, HIGH);
+      }
       analogWrite(ena, tocDo[tocdo]);
       digitalWrite(role_led, is_led ? HIGH : LOW);
       digitalWrite(in2_bom, is_bom ? HIGH : LOW);
@@ -144,28 +151,38 @@ void giamToc(int i)
   Serial.print("tocDo[tocdo]"); Serial.println(tocDo[tocdo]);
   digitalWrite (in1, HIGH);
 }
-void DK_bom_khi(int x) {
-  //giam
-  if (x > 520) {
-    if (x < 650) {
-      giamToc(1);
-    } else if (x < 1200) {
-      giamToc(2);
+void DK_bom_khi() {
+  bool checkStatus = false;
+  int x = analogRead(bientroX);
+  while (x > 520 || x < 500) {
+    x = analogRead(bientroX);
+    //giam
+    if (analogRead(bientroX) > 520) {
+      if (analogRead(bientroX) < 650) {
+        giamToc(1);
+      } else if (analogRead(bientroX) < 1200) {
+        giamToc(2);
+      }
+      delay(1000);
+      checkStatus = true;
     }
+    else if (analogRead(bientroX) < 500) {
+      if (analogRead(bientroX) < 100) {
+        tangToc(2);
+      } else {
+        tangToc(1);
+      }
+      delay(1000);
+      checkStatus = true;
+    }
+    checkStatus = true;
+    DK_Led(tocdo);
+  }
+  if (checkStatus == true) {
+    checkStatus = false;
     // Send current state to ESP32-CAM
     sendToESP32(tocdo, is_led, is_bom);
   }
-  else if (x < 500) {
-    if (x < 100) {
-      tangToc(2);
-    } else {
-      tangToc(1);
-    }
-    // Send current state to ESP32-CAM
-    sendToESP32(tocdo, is_led, is_bom);
-  }
-  DK_Led(tocdo);
-  delay(1000);
 }
 void nhayVaTatLed(int i) {
   is_nhay = false;
@@ -195,7 +212,8 @@ void DK_Led(int i) {
 }
 
 void loop() {
-  DK_bom_khi(analogRead(bientroX));
+  DK_bom_khi();
+  DK_Led(tocdo);
   //Serial.print("=");Serial.print(digitalRead(btn_bom));Serial.print("=");Serial.println(digitalRead(button_led));
 
   if (analogRead(bientroY) > 1000) {

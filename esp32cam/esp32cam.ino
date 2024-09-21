@@ -1,4 +1,3 @@
-//arduino esp32 cam ai think
 #include "Arduino.h"
 #include "WiFi.h"
 #include "esp_camera.h"
@@ -8,8 +7,9 @@
 #include <LittleFS.h>
 #include <FS.h>
 #include <Firebase_ESP_Client.h>
-//Cung cấp thông tin về quá trình tạo token
+// Cung cấp thông tin về quá trình tạo token
 #include <addons/TokenHelper.h>
+#include <time.h>
 
 // Thay thế bằng thông tin mạng của bạn
 const char* ssid = "P302";
@@ -26,7 +26,8 @@ const char* password = "0102030405";
 #define STORAGE_BUCKET_ID "aquariummanagement-ef751.appspot.com"
 
 // Tên file ảnh để lưu trong LittleFS
-#define FILE_PHOTO_PATH "/photo.jpg"
+// Bỏ định nghĩa FILE_PHOTO_PATH vì chúng ta sẽ sử dụng biến toàn cục
+
 #define BUCKET_PHOTO "/data/photo.jpg"
 
 // Đường dẫn đến Realtime Database
@@ -55,8 +56,13 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig configF;
 
+// Biến toàn cục để lưu tên file ảnh
+String filePath;
+
+// Callback cho quá trình tải lên Firebase Storage
 void fcsUploadCallback(FCS_UploadStatusInfo info);
 
+// Các biến điều khiển
 bool takePhoto = false;
 int airPumpSpeed = 0;
 bool bigLight = false;
@@ -65,11 +71,14 @@ bool waterPump = false;
 int airPumpSpeed2 = 0;
 bool bigLight2 = false;
 bool waterPump2 = false;
+
+unsigned long lastCheck = 0;
+unsigned long interval = 5000;  // Kiểm tra mỗi 5 giây
+
 // Chụp ảnh và lưu vào LittleFS
-void capturePhotoSaveLittleFS( void ) {
+void capturePhotoSaveLittleFS() {
   // Bỏ qua các ảnh đầu tiên vì chất lượng kém
   camera_fb_t* fb = NULL;
-  // Bỏ qua 3 khung hình đầu tiên (có thể tăng/giảm số lượng nếu cần)
   for (int i = 0; i < 4; i++) {
     fb = esp_camera_fb_get();
     esp_camera_fb_return(fb);
@@ -77,30 +86,37 @@ void capturePhotoSaveLittleFS( void ) {
   }
 
   // Chụp ảnh mới
-  fb = NULL;
   fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("Không thể chụp ảnh");
     return;
   }
 
-  // Tên file ảnh
-  Serial.printf("Tên file ảnh: %s\n", FILE_PHOTO_PATH);
-  File file = LittleFS.open(FILE_PHOTO_PATH, FILE_WRITE);
+  // Lấy thời gian hiện tại và định dạng thành hhmmss_ddmmyy
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Không thể lấy thời gian hiện tại");
+    esp_camera_fb_return(fb);
+    return;
+  }
+  char timeStr[30];
+  strftime(timeStr, sizeof(timeStr), "%H%M%S_%d%m%y.jpg", &timeinfo);
 
-  // Chèn dữ liệu vào file ảnh
+  // Cập nhật tên file với thời gian
+  filePath = "/" + String(timeStr);
+  Serial.printf("Tên file ảnh: %s\n", filePath.c_str());
+
+  // Lưu ảnh vào LittleFS
+  File file = LittleFS.open(filePath, FILE_WRITE);
   if (!file) {
     Serial.println("Không thể mở file để ghi");
   }
   else {
     file.write(fb->buf, fb->len); // payload (ảnh), độ dài payload
-    Serial.print("Ảnh đã được lưu vào ");
-    Serial.print(FILE_PHOTO_PATH);
-    Serial.print(" - Kích thước: ");
-    Serial.print(fb->len);
-    Serial.println(" bytes");
+    Serial.printf("Ảnh đã được lưu vào %s - Kích thước: %d bytes\n", filePath.c_str(), fb->len);
   }
-  // Đóng file
+
+  // Đóng file và trả lại bộ nhớ cho camera
   file.close();
   esp_camera_fb_return(fb);
 }
@@ -154,14 +170,15 @@ void initCamera() {
   config.grab_mode = CAMERA_GRAB_LATEST;
 
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_UXGA;
-    config.jpeg_quality = 10;
+    config.frame_size = FRAMESIZE_SVGA; // Giảm từ FRAMESIZE_UXGA xuống SVGA
+    config.jpeg_quality = 15;           // Tăng từ 10 lên 15
     config.fb_count = 1;
   } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
+    config.frame_size = FRAMESIZE_CIF;  // Giảm xuống CIF nếu không có PSRAM
+    config.jpeg_quality = 20;           // Tăng từ 12 lên 20
     config.fb_count = 1;
   }
+
   // Khởi tạo camera
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -170,26 +187,27 @@ void initCamera() {
   }
 }
 
+// Hàm gửi dữ liệu tới Arduino Nano
 void sendToNano(int airPumpSpeed, bool bigLight, bool waterPump) {
-  char buffer[20];
+  char buffer[50];
   sprintf(buffer, "TXofESP32(%d,%d,%d)", airPumpSpeed, bigLight, waterPump);
   Serial.println(buffer);
 }
 
+// Hàm nhận dữ liệu từ Arduino Nano
 void receiveFromNano() {
   if (Serial.available()) {
-    Serial.println("có tín hiệu từ nano");
     String data = Serial.readStringUntil('\n');
     if (data.startsWith("TXofNANO(")) {
       int values[3];
-      sscanf(data.c_str(), "TXofNANO(%d,%d,%d,%d)", &values[0], &values[1], &values[2]);
+      sscanf(data.c_str(), "TXofNANO(%d,%d,%d)", &values[0], &values[1], &values[2]);
 
       airPumpSpeed = values[0];
       bigLight = values[1];
       waterPump = values[2];
 
       if (airPumpSpeed != airPumpSpeed2 || bigLight != bigLight2 || waterPump != waterPump2) {
-        // Update Firebase with new values
+        // Update Firebase với giá trị mới
         if (Firebase.RTDB.setInt(&fbdo, "/airPumpSpeed", airPumpSpeed) &&
             Firebase.RTDB.setBool(&fbdo, "/bigLight", bigLight) &&
             Firebase.RTDB.setBool(&fbdo, "/waterPump", waterPump)) {
@@ -201,19 +219,39 @@ void receiveFromNano() {
         bigLight2 = bigLight;
         waterPump2 = waterPump;
       }
-
     }
   }
 }
 
+// Hàm khởi tạo thời gian sử dụng NTP và đặt múi giờ
+void initTime() {
+  const long gmtOffset_sec = 7 * 3600;  // GMT+7 cho Việt Nam
+  const int daylightOffset_sec = 0;
+  configTime(gmtOffset_sec, daylightOffset_sec, "pool.ntp.org", "time.nist.gov");
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Không thể đồng bộ thời gian với NTP");
+    return;
+  }
+  Serial.println("Đã đồng bộ thời gian thành công");
+}
+
+// Hàm setup
 void setup() {
   // Khởi tạo cổng Serial để debug
-  Serial.begin(57600);
+  Serial.begin(9600);
   initWiFi();
   initLittleFS();
+
   // Tắt 'brownout detector'
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  // Khởi tạo camera
   initCamera();
+
+  // Khởi tạo thời gian
+  initTime();
 
   // Cấu hình Firebase
   // Gán API key
@@ -229,7 +267,6 @@ void setup() {
   Firebase.begin(&configF, &auth);
   Firebase.reconnectWiFi(true);
 
-  //  Serial.begin(9600);  // Start serial communication with Arduino Nano
   if (Firebase.ready()) {
     // Đọc giá trị từ Realtime Database
     if (Firebase.RTDB.getBool(&fbdo, "/takePhoto")) {
@@ -246,91 +283,91 @@ void setup() {
     }
 
     // In ra các giá trị đã đọc được
-//    Serial.println("Giá trị đọc được từ Firebase:");
-//    Serial.printf("takePhoto: %s\n", takePhoto ? "true" : "false");
-//    Serial.printf("airPumpSpeed: %d\n", airPumpSpeed);
-//    Serial.printf("bigLight: %s\n", bigLight ? "true" : "false");
-//    Serial.printf("waterPump: %s\n", waterPump ? "true" : "false");
+    Serial.println("Giá trị đọc được từ Firebase:");
+    Serial.printf("takePhoto: %s\n", takePhoto ? "true" : "false");
+    Serial.printf("airPumpSpeed: %d\n", airPumpSpeed);
+    Serial.printf("bigLight: %s\n", bigLight ? "true" : "false");
+    Serial.printf("waterPump: %s\n", waterPump ? "true" : "false");
+
     if (airPumpSpeed != airPumpSpeed2 || bigLight != bigLight2 || waterPump != waterPump2) {
-      // Send current state to Arduino Nano
+      // Gửi trạng thái hiện tại tới Arduino Nano
       sendToNano(airPumpSpeed, bigLight, waterPump);
       airPumpSpeed2 = airPumpSpeed;
       bigLight2 = bigLight;
       waterPump2 = waterPump;
     }
   }
+
+  // Kiểm tra dung lượng trống của LittleFS
+  checkLittleFSSpace();
+  delay(100);
+  // formatLittleFS();
+  // delay(100);
+  // checkLittleFSSpace();
 }
 
+// Hàm loop
 void loop() {
-  if (Firebase.ready()) {
-    // Đọc giá trị từ Realtime Database
-    if (Firebase.RTDB.getBool(&fbdo, "/takePhoto")) {
-      takePhoto = fbdo.boolData();
-    }
-    if (Firebase.RTDB.getInt(&fbdo, "/airPumpSpeed")) {
-      airPumpSpeed = fbdo.intData();
-    }
-    if (Firebase.RTDB.getBool(&fbdo, "/bigLight")) {
-      bigLight = fbdo.boolData();
-    }
-    if (Firebase.RTDB.getBool(&fbdo, "/waterPump")) {
-      waterPump = fbdo.boolData();
-    }
+  // Kiểm tra Firebase sau mỗi khoảng thời gian đã định
+  if (millis() - lastCheck > interval) {
+    lastCheck = millis();
 
-    // In ra các giá trị đã đọc được
-//    Serial.println("Giá trị đọc được từ Firebase:");
-//    Serial.printf("takePhoto: %s\n", takePhoto ? "true" : "false");
-//    Serial.printf("airPumpSpeed: %d\n", airPumpSpeed);
-//    Serial.printf("bigLight: %s\n", bigLight ? "true" : "false");
-//    Serial.printf("waterPump: %s\n", waterPump ? "true" : "false");
-    if (airPumpSpeed != airPumpSpeed2 || bigLight != bigLight2 || waterPump != waterPump2) {
-      // Send current state to Arduino Nano
-      sendToNano(airPumpSpeed, bigLight, waterPump);
-      airPumpSpeed2 = airPumpSpeed;
-      bigLight2 = bigLight;
-      waterPump2 = waterPump;
-    }
+    if (Firebase.ready()) {
+      // Đọc giá trị từ Firebase
+      if (Firebase.RTDB.getBool(&fbdo, "/takePhoto")) {
+        takePhoto = fbdo.boolData();
+      }
+      if (Firebase.RTDB.getInt(&fbdo, "/airPumpSpeed")) {
+        airPumpSpeed = fbdo.intData();
+      }
+      if (Firebase.RTDB.getBool(&fbdo, "/bigLight")) {
+        bigLight = fbdo.boolData();
+      }
+      if (Firebase.RTDB.getBool(&fbdo, "/waterPump")) {
+        waterPump = fbdo.boolData();
+      }
 
+      // Gửi trạng thái tới Arduino Nano nếu có thay đổi
+      if (airPumpSpeed != airPumpSpeed2 || bigLight != bigLight2 || waterPump != waterPump2) {
+        sendToNano(airPumpSpeed, bigLight, waterPump);
+        airPumpSpeed2 = airPumpSpeed;
+        bigLight2 = bigLight;
+        waterPump2 = waterPump;
+      }
 
-    if (takePhoto) {
-      Serial.println("Bắt đầu chụp ảnh...");
-      capturePhotoSaveLittleFS();
-      Serial.print("Đang tải ảnh lên Firebase Storage... ");
+      // Chụp ảnh nếu cần
+      if (takePhoto) {
+        Serial.println("Bắt đầu chụp ảnh...");
+        capturePhotoSaveLittleFS();
+        Serial.print("Đang tải ảnh lên Firebase Storage... ");
 
-      if (Firebase.Storage.upload(&fbdo, STORAGE_BUCKET_ID, FILE_PHOTO_PATH, mem_storage_type_flash, BUCKET_PHOTO, "image/jpeg", fcsUploadCallback)) {
-        Serial.printf("\nURL Tải xuống: %s\n", fbdo.downloadURL().c_str());
-
-        // Đặt lại trạng thái takePhoto
-        if (Firebase.RTDB.setBool(&fbdo, "/takePhoto", false)) {
-          Serial.println("Đã đặt lại trạng thái takePhoto thành false");
+        if (Firebase.Storage.upload(&fbdo, STORAGE_BUCKET_ID, filePath.c_str(), mem_storage_type_flash, filePath.c_str(), "image/jpeg", fcsUploadCallback)) {
+          Serial.printf("\nURL Tải xuống: %s\n", fbdo.downloadURL().c_str());
+          if (Firebase.RTDB.setBool(&fbdo, "/takePhoto", false)) {
+            Serial.println("Đã đặt lại trạng thái takePhoto thành false");
+          } else {
+            Serial.println("Lỗi khi đặt lại trạng thái takePhoto");
+          }
         } else {
-          Serial.println("Lỗi khi đặt lại trạng thái takePhoto");
+          Serial.println("Lỗi khi tải ảnh lên: " + fbdo.errorReason());
         }
       }
-      else {
-        Serial.println("Lỗi khi tải ảnh lên: " + fbdo.errorReason());
-      }
     }
-    delay(100);  // Keep the existing delay
   }
-  // Check for updates from Arduino Nano
+
+  // Kiểm tra cập nhật từ Arduino Nano
   receiveFromNano();
-
 }
-
-// ... (keep all other existing functions)
 
 // Hàm callback cho quá trình tải lên Firebase Storage
 void fcsUploadCallback(FCS_UploadStatusInfo info) {
   if (info.status == firebase_fcs_upload_status_init) {
     Serial.printf("Đang tải lên file %s (%d) đến %s\n", info.localFileName.c_str(), info.fileSize, info.remoteFileName.c_str());
   }
-  else if (info.status == firebase_fcs_upload_status_upload)
-  {
-    Serial.printf("Đã tải lên %d%s, Thời gian đã trôi qua %d ms\n", (int)info.progress, "%", info.elapsedTime);
+  else if (info.status == firebase_fcs_upload_status_upload) {
+    Serial.printf("Đã tải lên %d%%, Thời gian đã trôi qua %d ms\n", (int)info.progress, info.elapsedTime);
   }
-  else if (info.status == firebase_fcs_upload_status_complete)
-  {
+  else if (info.status == firebase_fcs_upload_status_complete) {
     Serial.println("Tải lên hoàn tất\n");
     FileMetaInfo meta = fbdo.metaData();
     Serial.printf("Tên: %s\n", meta.name.c_str());
@@ -343,8 +380,33 @@ void fcsUploadCallback(FCS_UploadStatusInfo info) {
     Serial.printf("CRC32: %s\n", meta.crc32.c_str());
     Serial.printf("Tokens: %s\n", meta.downloadTokens.c_str());
     Serial.printf("URL Tải xuống: %s\n\n", fbdo.downloadURL().c_str());
+
+    // Xóa file sau khi tải lên thành công
+    if (LittleFS.exists(filePath)) {
+      if (LittleFS.remove(filePath)) {
+        Serial.printf("Đã xóa file %s sau khi tải lên thành công.\n", filePath.c_str());
+      } else {
+        Serial.printf("Không thể xóa file %s.\n", filePath.c_str());
+      }
+    }
   }
   else if (info.status == firebase_fcs_upload_status_error) {
     Serial.printf("Tải lên thất bại, %s\n", info.errorMsg.c_str());
+  }
+}
+
+// Hàm kiểm tra dung lượng trống của LittleFS
+void checkLittleFSSpace() {
+  unsigned long totalBytes = LittleFS.totalBytes();
+  unsigned long usedBytes = LittleFS.usedBytes();
+
+  Serial.printf("Dung lượng khả dụng: %lu bytes\n", totalBytes - usedBytes);
+  Serial.printf("Dung lượng đã sử dụng: %lu bytes\n", usedBytes);
+}
+void formatLittleFS() {
+  if (LittleFS.format()) {
+    Serial.println("Định dạng LittleFS thành công.");
+  } else {
+    Serial.println("Định dạng LittleFS thất bại.");
   }
 }
